@@ -75,8 +75,8 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
 }
 #Create an ECS Service
 resource "aws_ecs_service" "my_ecs_service" {
-  name            = "my-ecs-service"
-  cluster         = module.ecs.this_ecs_cluster_id
+  name    = "my-ecs-service"
+  cluster = module.ecs.this_ecs_cluster_id
   #The task_definition attribute references an existing task definition named my_task_definition.
   # This task definition defines the Docker container configurations, including the image to use and resource allocations.
   task_definition = aws_ecs_task_definition.my_task_definition.arn
@@ -189,6 +189,22 @@ resource "aws_security_group" "ecs_sg" {
   egress {
     from_port   = 0
     to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow inbound traffic from ALB
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow inbound traffic from ALB
+  ingress {
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
