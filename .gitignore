@@ -12,7 +12,7 @@ test-project/db.sqlite3
 terraform-data/.terraform
 terraform-data/terraform.tfstate
 terraform-data/terraform.tfstate.backup
-
+terraform-data/key-ssh.pem
 # Ignore any local files or configurations that should not be shared
 .local
 .env

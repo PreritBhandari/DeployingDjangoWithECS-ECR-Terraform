@@ -12,6 +12,10 @@
 # terraform init
 # terraform apply
 
+
+# Additionally IAm role called as AmazonEC2ContainerServiceforEC2Role was created in Iam Management console and attached it to individual Instances in Management console form Actions> Security> Manage Iam role
+#AmazonEC2ContainerServiceforEC2Role and AmazonEC2ContainerServiceAutoscaleRole policies were added to it
+
 provider "aws" {
   region = var.aws_region
 
@@ -43,6 +47,26 @@ resource "aws_ecs_task_definition" "my_task_definition" {
     }]
   }])
 }
+
+# resource "aws_instance" "ecs_instances" {
+#   count         = 2
+#   ami           = "ami-0f0f215a5d51635e3"
+#   instance_type = "t2.micro"
+#   subnet_id     = aws_subnet.subnet_a.id
+
+#   tags = {
+#     Name = "ecs-instance-${count.index}"
+#   }
+
+#   # Add user data to install and configure ECS agent
+#   user_data = <<-EOF
+#               #!/bin/bash
+#               echo ECS_CLUSTER=${module.ecs.this_ecs_cluster_name} >> /etc/ecs/ecs.config
+#               systemctl start ecs
+#               EOF
+
+
+# }
 
 # # --- ECS Capacity Provider ---
 # connect the ECS Cluster to the ASG group so that the cluster can use EC2 instances to deploy containers.
@@ -82,6 +106,20 @@ resource "aws_ecs_service" "my_ecs_service" {
   task_definition = aws_ecs_task_definition.my_task_definition.arn
   desired_count   = 1
   launch_type     = "EC2" # or "FARGATE" depending on your setup
+
+  # network_configuration {
+  #   # Subnets where the service tasks will be launched
+  #   subnets          = [aws_subnet.subnet_a.id, aws_subnet.subnet_b.id]
+  #   security_groups  = [aws_security_group.ecs_sg.id]
+  #   assign_public_ip = true
+
+  # }
+
+  # load_balancer {
+  #   target_group_arn = module.alb.this_lb_arn
+  #   container_name = 
+  # }
+
 }
 
 # Launch template
@@ -89,14 +127,31 @@ resource "aws_ecs_service" "my_ecs_service" {
 resource "aws_launch_template" "ecs_launch_template" {
   name_prefix = "ecs-launch-template-"
   #aws ec2 describe-images --owners amazon --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*" "Name=virtualization-type,Values=hvm" "Name=root-device-type,Values=ebs" --query 'Images[*].[ImageId, Name]' --region us-east-1
-  image_id      = "ami-0fe0238291c8e3f07" # Specify your desired AMI ID 
+  image_id      = "ami-0f0f215a5d51635e3" # Specify your desired AMI ID  (should be ecs-optimized ami, so not required to individually go to instances, ssh to them and register for ecs.) Can get through #aws ssm get-parameters --names /aws/service/ecs/optimized-ami/amazon-linux-2/recommended
   instance_type = "t2.micro"              # Specify your desired instance type
-  # key_name      = "my-key-pair"           # Specify your key pair name
+  key_name      = "key-ssh"               # Specify your key pair name. This is required inorder to ssh . Key pair should be there in specied zone like in us-east-1 you need to create key-pair first and write its name here
   # iam_instance_profile {
   #   name = aws_iam_instance_profile.ecs_instance_profile.name # Specify the IAM instance profile name
   # }
   # user_data = file("user_data.sh") # Optionally provide user data scriptye
+
+  # assigning public ip addresses for our ec2 instances inorder to communicate
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.ecs_sg.id]
+
+  }
+
+  # Add user data to install and configure ECS agent
+  user_data = base64encode(<<-EOF
+              #!/bin/bash
+              echo ECS_CLUSTER=${module.ecs.this_ecs_cluster_name} >> /etc/ecs/ecs.config
+              sudo systemctl enable ecs
+              sudo systemctl start ecs
+              EOF
+  )
 }
+
 
 #  to manage the EC2 instances for our ECS cluster,
 resource "aws_autoscaling_group" "ecs_asg" {
@@ -114,6 +169,8 @@ resource "aws_autoscaling_group" "ecs_asg" {
     value               = "ecs-instance-terraformtest"
     propagate_at_launch = true
   }
+
+
 }
 
 
@@ -135,10 +192,13 @@ resource "aws_internet_gateway" "my_igw" {
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
 
-  # route = {
-  #   cidr_block = "0.0.0.0/0"
-  #   gateway_id = aws_internet_gateway.my_igw.id
-  # }
+
+  # this is required so that routes for subnet becomes public otherwise only local subnets can access each of them
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.my_igw.id
+
+  }
 
   tags = {
     Name = "Terraform test public route table"
@@ -155,6 +215,8 @@ resource "aws_subnet" "subnet_a" {
     Name = "terraform-test-subneta"
   }
 
+  map_public_ip_on_launch = true
+
 }
 
 resource "aws_subnet" "subnet_b" {
@@ -164,6 +226,7 @@ resource "aws_subnet" "subnet_b" {
   tags = {
     Name = "terraform-test-subnetb"
   }
+  map_public_ip_on_launch = true
 
 }
 
@@ -208,10 +271,27 @@ resource "aws_security_group" "ecs_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow inbound traffic on ports 51678 and 51679 for ECS communication
+  ingress {
+    from_port   = 51678
+    to_port     = 51679
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 
 # Modules
+
+
 
 module "ecs" {
 
@@ -219,6 +299,7 @@ module "ecs" {
   version = "~> 2.0"
 
   name = "my-ecs-cluster"
+
 
 
   # Instead of specifying instance_type, you can configure the capacity provider strategy
@@ -231,7 +312,12 @@ module "ecs" {
   #   weight            = 1
   # }
 
+
+
 }
+
+
+
 
 # Application Load Balancer
 module "alb" {
